@@ -702,6 +702,8 @@ static int my_load(const char *type, int fileind, int argc, char **argv,
 	char *kernel;
 	char *kernel_buf;
 	off_t kernel_size;
+	char *kernel_compressed_buf;
+	off_t kernel_compressed_size;
 	int i = 0;
 	int result;
 	struct kexec_info info;
@@ -721,12 +723,14 @@ static int my_load(const char *type, int fileind, int argc, char **argv,
 	kernel = argv[fileind];
 	/* slurp in the input kernel */
 	kernel_buf = slurp_decompress_file(kernel, &kernel_size);
-
+	// make sure to always slurp in the compressed input kernel
+	// this is used to check for appended dtb
+	kernel_compressed_buf = slurp_file(kernel, &kernel_compressed_size);
 	dbgprintf("kernel: %p kernel_size: 0x%lx\n",
 		  kernel_buf, kernel_size);
 
 	if (get_memory_ranges(&info.memory_range, &info.memory_ranges,
-		info.kexec_flags) < 0 || info.memory_ranges == 0) {
+		info.kexec_flags,kernel_compressed_buf,kernel_compressed_size) < 0 || info.memory_ranges == 0) {
 		fprintf(stderr, "Could not get memory layout\n");
 		return -1;
 	}
@@ -770,7 +774,7 @@ static int my_load(const char *type, int fileind, int argc, char **argv,
 	}
 	info.kexec_flags |= native_arch;
 
-	result = file_type[i].load(argc, argv, kernel_buf, kernel_size, &info);
+	result = file_type[i].load(argc, argv, kernel_buf, kernel_size, kernel_compressed_buf, kernel_compressed_size, &info);
 	if (result < 0) {
 		switch (result) {
 		case ENOCRASHKERNEL:
@@ -1142,7 +1146,9 @@ static int do_kexec_file_load(int fileind, int argc, char **argv,
 	struct kexec_info info;
 	int ret = 0;
 	char *kernel_buf;
+	char *kernel_compressed_buf;
 	off_t kernel_size;
+	off_t kernel_compressed_size;
 
 	memset(&info, 0, sizeof(info));
 	info.segment = NULL;
@@ -1176,7 +1182,9 @@ static int do_kexec_file_load(int fileind, int argc, char **argv,
 
 	/* slurp in the input kernel */
 	kernel_buf = slurp_decompress_file(kernel, &kernel_size);
-
+	// make sure to always slurp in the compressed input kernel
+	// this is used to check for appended dtb
+	kernel_compressed_buf = slurp_decompress_file(kernel, &kernel_compressed_size);
 	for (i = 0; i < file_types; i++) {
 		if (file_type[i].probe(kernel_buf, kernel_size) >= 0)
 			break;
@@ -1188,7 +1196,7 @@ static int do_kexec_file_load(int fileind, int argc, char **argv,
 		return -1;
 	}
 
-	ret = file_type[i].load(argc, argv, kernel_buf, kernel_size, &info);
+	ret = file_type[i].load(argc, argv, kernel_buf, kernel_size, kernel_compressed_buf, kernel_compressed_size, &info);
 	if (ret < 0) {
 		fprintf(stderr, "Cannot load %s\n", kernel);
 		return ret;

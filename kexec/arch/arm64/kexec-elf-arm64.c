@@ -45,7 +45,8 @@ on_exit:
 }
 
 int elf_arm64_load(int argc, char **argv, const char *kernel_buf,
-	off_t kernel_size, struct kexec_info *info)
+	off_t kernel_size, const char *kernel_compressed_buf,
+	off_t kernel_compressed_size, struct kexec_info *info)
 {
 	char *header_option = NULL;
 	int result;
@@ -125,7 +126,7 @@ int elf_arm64_load(int argc, char **argv, const char *kernel_buf,
 		ehdr.e_entry, virt_to_phys(ehdr.e_entry));
 
 	result = arm64_load_other_segments(info, (unsigned long)info->entry,
-		header_option);
+		header_option, kernel_buf, kernel_size);
 exit:
 	free_elf_info(&ehdr);
 	if (header_option)

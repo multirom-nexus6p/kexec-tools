@@ -498,9 +498,185 @@ static int read_sys_dtb(struct dtb *dtb, const char *command_line)
 	return set_bootargs(dtb, command_line);
 }
 
-static int read_1st_dtb(struct dtb *dtb, const char *command_line)
+#define DTB_PAD_SIZE            1024
+#define INVALID_SOC_REV_ID 0xFFFFFFFF
+
+struct msm_id
+{
+	uint32_t platform_id;
+	uint32_t hardware_id;
+	uint32_t soc_rev;
+};
+
+static uint32_t dtb_compatible(void *dtb, struct msm_id *devid)
+{
+	int root_offset;
+	const void *prop;
+	struct msm_id msm_id;
+	int len;
+
+	root_offset = fdt_path_offset(dtb, "/");
+	if (root_offset < 0)
+		return 0;
+
+	prop = fdt_getprop(dtb, root_offset, "qcom,msm-id", &len);
+	if (!prop || len <= 0) {
+		printf("DTB: qcom,msm-id entry not found\n");
+		return 0;
+	} else if (len < (int)sizeof(struct msm_id)) {
+		printf("DTB: qcom,msm-id entry size mismatch (%d != %d)\n",
+			len, sizeof(struct msm_id));
+		return 0;
+	}
+	msm_id.platform_id = fdt32_to_cpu(((const struct msm_id *)prop)->platform_id);
+	msm_id.hardware_id = fdt32_to_cpu(((const struct msm_id *)prop)->hardware_id);
+	msm_id.soc_rev = fdt32_to_cpu(((const struct msm_id *)prop)->soc_rev);
+
+	if (msm_id.platform_id != devid->platform_id ||
+		msm_id.hardware_id != devid->hardware_id) {
+		return INVALID_SOC_REV_ID;
+	}
+
+	return msm_id.soc_rev;
+}
+
+static int get_appended_dtb(const char *kernel, off_t kernel_len, struct dtb *dtb_struct)
+{
+	char *kernel_end = (char*)kernel + kernel_len;
+	char *dtb;
+	FILE *f;
+	struct msm_id devid;
+	char *bestmatch_tag = NULL;
+	uint32_t bestmatch_tag_size;
+	uint32_t bestmatch_soc_rev_id = INVALID_SOC_REV_ID;
+
+	f = fopen("/proc/device-tree/qcom,msm-id", "r");
+	if(!f)
+	{
+		fprintf(stderr, "DTB: Couldn't open /proc/device-tree/qcom,msm-id!\n");
+		return 0;
+	}
+
+	fread(&devid, sizeof(struct msm_id), 1, f);
+	fclose(f);
+
+	devid.platform_id = fdt32_to_cpu(devid.platform_id);
+	devid.hardware_id = fdt32_to_cpu(devid.hardware_id);
+	devid.soc_rev = fdt32_to_cpu(devid.soc_rev);
+
+	printf("DTB: platform %u hw %u soc 0x%x\n", devid.platform_id, devid.hardware_id, devid.soc_rev);
+
+	// scan the compressed kernel buf for dtb
+	dtb = kernel;
+	while(dtb + sizeof(struct fdt_header) < kernel_end)
+	{
+
+		int ret = fdt_check_header(dtb);
+		if (ret != 0) {
+			dtb++;
+			continue;
+		} else {
+			printf("DTB: found dtb header at %zu\n", dtb);
+		}
+
+		uint32_t dtb_soc_rev_id;
+		uint32_t dtb_size;
+
+		// stop if we go over kernel_end
+		if (dtb + fdt_totalsize(dtb) > kernel_end) {
+			printf("DTB: went over kernel_end, BREAK!\n");
+			break;
+		}
+		dtb_size = fdt_totalsize(dtb);
+		dtb_soc_rev_id = dtb_compatible(dtb, &devid);
+		if (dtb_soc_rev_id == devid.soc_rev) {
+			dtb_struct->buf = xmalloc(dtb_size);
+			memcpy(dtb_struct->buf, dtb, dtb_size);
+			dtb_struct->size = dtb_size;
+			printf("DTB: match 0x%x, my id 0x%x, len %u\n", dtb_soc_rev_id, devid.soc_rev, dtb_size);
+			return 1;
+		} else if ((dtb_soc_rev_id != INVALID_SOC_REV_ID) &&
+				   (dtb_soc_rev_id < devid.soc_rev)) {
+			/* if current bestmatch is less than new dtb_soc_rev_id then update
+			   bestmatch_tag */
+			if((bestmatch_soc_rev_id == INVALID_SOC_REV_ID) ||
+			   (bestmatch_soc_rev_id < dtb_soc_rev_id)) {
+				bestmatch_tag = dtb;
+				bestmatch_tag_size = dtb_size;
+				bestmatch_soc_rev_id = dtb_soc_rev_id;
+			}
+		}
+
+		/* goto the next device tree if any */
+		dtb += dtb_size;
+	}
+	if(bestmatch_tag) {
+		printf("DTB: bestmatch 0x%x, my id 0x%x\n", bestmatch_soc_rev_id, devid.soc_rev);
+		dtb_struct->buf = xmalloc(bestmatch_tag_size);
+		memcpy(dtb_struct->buf, bestmatch_tag, bestmatch_tag_size);
+		dtb_struct->size = bestmatch_tag_size;
+		return 1;
+	}
+	return 0;
+}
+
+int dtb_add_memory_reg(void *dtb_buf, int off)
+{
+	FILE *f;
+	uint32_t reg;
+	int res;
+
+	f = fopen("/proc/device-tree/memory/reg", "r");
+	if(!f)
+	{
+		fprintf(stderr, "DTB: Failed to open /proc/device-tree/memory/reg!\n");
+		return 0;
+	}
+
+	fdt_delprop(dtb_buf, off, "reg");
+
+	while(fread(&reg, sizeof(reg), 1, f) == 1)
+		fdt_appendprop(dtb_buf, off, "reg", &reg, sizeof(reg));
+
+	fclose(f);
+	return 1;
+}
+
+int read_appended_dtb(const char *kernel_buf, off_t kernel_size, struct dtb *dtb, const char *command_line) {
+
+	if(get_appended_dtb(kernel_buf, kernel_size, dtb))
+	{
+		int ret, off;
+
+		printf("DTB: Using DTB appended to zImage\n");
+		dtb->size = fdt_totalsize(dtb->buf) + DTB_PAD_SIZE;
+		dtb->buf = xrealloc(dtb->buf, dtb->size);
+		ret = fdt_open_into(dtb->buf, dtb->buf, dtb->size);
+		if(ret)
+			die("DTB: fdt_open_into failed");
+			ret = fdt_path_offset(dtb->buf, "/memory");
+		if (ret >= 0)
+			dtb_add_memory_reg(dtb->buf, ret);
+		else
+			fprintf(stderr, "DTB: Could not find memory node.\n");
+		// this shouldn't be used, but we set it for completeness
+		dtb->path = "appended";
+		ret = set_bootargs(dtb, command_line);
+		return ret;
+	} else {
+		printf("DTB: appended DTB not detected\n");
+	}
+
+	return 1;
+}
+
+static int read_1st_dtb(struct dtb *dtb, const char *command_line, const char *kernel_buf, off_t kernel_size)
 {
 	int result;
+
+	result = read_appended_dtb(kernel_buf, kernel_size, dtb, command_line);
+	if (!result)
+		goto on_success;
 
 	result = read_sys_dtb(dtb, command_line);
 
@@ -583,7 +759,8 @@ static uint64_t read_sink(const char *command_line)
  */
 
 int arm64_load_other_segments(struct kexec_info *info,
-	uint64_t kernel_entry, char *option)
+	uint64_t kernel_entry, char *option,const char *kernel_buf,
+	off_t kernel_size)
 {
 	int result;
 	uint64_t dtb_base;
@@ -593,6 +770,7 @@ int arm64_load_other_segments(struct kexec_info *info,
 	char *initrd_buf = NULL;
 	struct dtb dtb_1 = {.name = "dtb_1"};
 	struct dtb dtb_2 = {.name = "dtb_2"};
+
 	char command_line[COMMAND_LINE_SIZE] = "";
 
 	dbgprintf("%s:%d: add '%s' to command line\n", __func__, __LINE__,
@@ -616,15 +794,18 @@ int arm64_load_other_segments(struct kexec_info *info,
 		assert(dtb_2.buf);
 	}
 
-	result = read_1st_dtb(&dtb_1, command_line);
+	result = read_1st_dtb(&dtb_1, command_line, kernel_buf, kernel_size);
 
 	if (result && !arm64_opts.dtb) {
 		fprintf(stderr, "kexec: Error: No device tree available.\n");
 		return result;
 	}
 
-	if (result && arm64_opts.dtb)
+	if (result && arm64_opts.dtb) {
+		// skip header if loading dtb.img
+		dtb_2.buf = dtb_2.buf+2048;
 		dtb_1 = dtb_2;
+	}
 	else if (!result && !arm64_opts.dtb)
 		dtb_2 = dtb_1;
 
@@ -786,7 +967,7 @@ int arm64_process_image_header(const struct arm64_image_header *h)
 	return 0;
 }
 
-static int get_memory_ranges_dt(struct memory_range *array, unsigned int *count)
+static int get_memory_ranges_dt(struct memory_range *array, unsigned int *count, char *kernel_buf, off_t kernel_size)
 {
 	struct region {uint64_t base; uint64_t size;};
 	struct dtb dtb = {.name = "range_dtb"};
@@ -795,7 +976,7 @@ static int get_memory_ranges_dt(struct memory_range *array, unsigned int *count)
 
 	*count = 0;
 
-	result = read_1st_dtb(&dtb, NULL);
+	result = read_1st_dtb(&dtb, NULL, kernel_buf, kernel_size);
 
 	if (result) {
 		goto on_error;
@@ -942,13 +1123,13 @@ static int get_memory_ranges_iomem(struct memory_range *array,
 }
 
 int get_memory_ranges(struct memory_range **range, int *ranges,
-	unsigned long kexec_flags)
+	unsigned long kexec_flags, char *kernel_buf, off_t kernel_size)
 {
 	static struct memory_range array[KEXEC_SEGMENT_MAX];
 	unsigned int count;
 	int result;
 
-	result = get_memory_ranges_dt(array, &count);
+	result = get_memory_ranges_dt(array, &count, kernel_buf, kernel_size);
 
 	if (result)
 		result = get_memory_ranges_iomem(array, &count);

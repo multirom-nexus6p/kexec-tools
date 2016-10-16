@@ -183,7 +183,7 @@ long kernel_version(void);
 
 void usage(void);
 int get_memory_ranges(struct memory_range **range, int *ranges,
-						unsigned long kexec_flags);
+						unsigned long kexec_flags, char *kernel_buf, off_t kernel_size);
 int valid_memory_range(struct kexec_info *info,
 		       unsigned long sstart, unsigned long send);
 void print_segments(FILE *file, struct kexec_info *info);
@@ -195,7 +195,7 @@ unsigned long locate_hole(struct kexec_info *info,
 
 typedef int (probe_t)(const char *kernel_buf, off_t kernel_size);
 typedef int (load_t )(int argc, char **argv,
-	const char *kernel_buf, off_t kernel_size, 
+	const char *kernel_buf, off_t kernel_size, const char *kernel_compressed_buf, off_t kernel_compressed_size,
 	struct kexec_info *info);
 typedef void (usage_t)(void);
 struct file_type {

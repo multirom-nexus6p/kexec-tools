@@ -88,7 +88,8 @@ static unsigned long long get_kernel_page_offset(void)
 }
 
 int image_arm64_load(int argc, char **argv, const char *kernel_buf,
-	off_t kernel_size, struct kexec_info *info)
+	off_t kernel_size, const char *kernel_compressed_buf,
+	off_t kernel_compressed_size, struct kexec_info *info)
 {
 	int result;
 	const struct arm64_image_header *h;
@@ -123,7 +124,7 @@ int image_arm64_load(int argc, char **argv, const char *kernel_buf,
 			info->entry, kernel_size, 0);
 
 	result = arm64_load_other_segments(info, (unsigned long)info->entry,
-		header_option);
+		header_option, kernel_compressed_buf, kernel_compressed_size);
 
 	if (header_option)
 		free(header_option);
